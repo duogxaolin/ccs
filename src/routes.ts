@@ -18,7 +18,15 @@ import {
   startTokenRefreshService,
   stopTokenRefreshService,
 } from './token-refresh';
-import { HealthStatus, ProxyStats } from './types';
+import {
+  getActiveAccount,
+  setActiveAccount,
+  getAccountsForProvider,
+  getAccountSwitchingStatus,
+  switchToNextAccount,
+  clearQuotaExceeded,
+} from './account-switcher';
+import { HealthStatus, ProxyStats, CLIProxyProvider } from './types';
 
 const router = Router();
 const startTime = Date.now();
@@ -327,6 +335,120 @@ router.post('/stats/reset', requireApiKey, (_req: Request, res: Response) => {
     requestStats.collectedAt = new Date().toISOString();
 
     res.json({ success: true, message: 'Statistics reset' });
+  } catch (error) {
+    res.status(500).json({ error: (error as Error).message });
+  }
+});
+
+// ============================================
+// Account Switching Endpoints
+// ============================================
+
+/**
+ * GET /api/accounts/status - Get account switching status for all providers
+ */
+router.get('/accounts/status', requireApiKey, (_req: Request, res: Response) => {
+  try {
+    const status = getAccountSwitchingStatus();
+    res.json(status);
+  } catch (error) {
+    res.status(500).json({ error: (error as Error).message });
+  }
+});
+
+/**
+ * GET /api/accounts/:provider - Get accounts for a specific provider
+ */
+router.get('/accounts/:provider', requireApiKey, (req: Request, res: Response) => {
+  try {
+    const provider = req.params.provider as CLIProxyProvider;
+    const validProviders = ['gemini', 'codex', 'agy', 'qwen', 'iflow', 'kiro', 'ghcp'];
+
+    if (!validProviders.includes(provider)) {
+      res.status(400).json({ error: 'Invalid provider', validProviders });
+      return;
+    }
+
+    const accounts = getAccountsForProvider(provider);
+    const active = getActiveAccount(provider);
+
+    res.json({
+      provider,
+      accounts,
+      activeAccount: active?.email || null,
+      totalAccounts: accounts.length,
+    });
+  } catch (error) {
+    res.status(500).json({ error: (error as Error).message });
+  }
+});
+
+/**
+ * POST /api/accounts/:provider/switch - Switch to a specific account (like --use flag)
+ */
+router.post('/accounts/:provider/switch', requireApiKey, (req: Request, res: Response) => {
+  try {
+    const provider = req.params.provider as CLIProxyProvider;
+    const { accountId, email } = req.body as { accountId?: string; email?: string };
+    const targetAccount = accountId || email;
+
+    if (!targetAccount) {
+      res.status(400).json({ error: 'accountId or email required in request body' });
+      return;
+    }
+
+    const success = setActiveAccount(provider, targetAccount);
+    if (success) {
+      const active = getActiveAccount(provider);
+      res.json({
+        success: true,
+        message: `Switched to account: ${active?.email}`,
+        activeAccount: active,
+      });
+    } else {
+      res.status(404).json({
+        error: 'Account not found',
+        message: `No account matching "${targetAccount}" found for provider ${provider}`
+      });
+    }
+  } catch (error) {
+    res.status(500).json({ error: (error as Error).message });
+  }
+});
+
+/**
+ * POST /api/accounts/:provider/next - Switch to next available account
+ */
+router.post('/accounts/:provider/next', requireApiKey, (req: Request, res: Response) => {
+  try {
+    const provider = req.params.provider as CLIProxyProvider;
+    const nextAccount = switchToNextAccount(provider);
+
+    if (nextAccount) {
+      res.json({
+        success: true,
+        message: `Switched to next account: ${nextAccount.email}`,
+        activeAccount: nextAccount,
+      });
+    } else {
+      res.status(404).json({
+        success: false,
+        error: 'No available accounts',
+        message: 'All accounts are either expired or quota exceeded',
+      });
+    }
+  } catch (error) {
+    res.status(500).json({ error: (error as Error).message });
+  }
+});
+
+/**
+ * POST /api/accounts/clear-quota - Clear quota exceeded flags for all accounts
+ */
+router.post('/accounts/clear-quota', requireApiKey, (_req: Request, res: Response) => {
+  try {
+    clearQuotaExceeded();
+    res.json({ success: true, message: 'Cleared all quota exceeded flags' });
   } catch (error) {
     res.status(500).json({ error: (error as Error).message });
   }
