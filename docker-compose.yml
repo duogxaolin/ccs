@@ -1,0 +1,34 @@
+version: '3.8'
+
+services:
+  ccs-remote:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: ccs-remote
+    restart: unless-stopped
+    ports:
+      - "8318:8318"
+    environment:
+      - CCS_PORT=8318
+      - CCS_HOST=0.0.0.0
+      - CCS_DATA_DIR=/app/data
+      - CCS_API_KEY=${CCS_API_KEY:-ccs-remote-key}
+      - CCS_MANAGEMENT_KEY=${CCS_MANAGEMENT_KEY:-ccs-remote-mgmt}
+      - CCS_CLIPROXY_PORT=8317
+      - CCS_CORS_ORIGINS=${CCS_CORS_ORIGINS:-*}
+    volumes:
+      # Mount auth files from host (copy from Windows .ccs folder)
+      - ./data:/app/data
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8318/api/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
