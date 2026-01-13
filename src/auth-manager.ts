@@ -164,6 +164,68 @@ export function getAccountToken(provider: CLIProxyProvider, accountId: string): 
 }
 
 /**
+ * Get access token for any account by email (regardless of provider)
+ */
+export function getAccessTokenByEmail(email: string): { token: string; provider: CLIProxyProvider } | null {
+  const authDir = getAuthDir();
+
+  if (!fs.existsSync(authDir)) {
+    return null;
+  }
+
+  const files = fs.readdirSync(authDir).filter((f) => f.endsWith('.json'));
+
+  for (const filename of files) {
+    try {
+      const filepath = path.join(authDir, filename);
+      const content = JSON.parse(fs.readFileSync(filepath, 'utf-8')) as AuthFile;
+      const provider = detectProvider(filename, content);
+
+      if (provider && content.access_token && content.email === email) {
+        return { token: content.access_token, provider };
+      }
+    } catch {
+      // Skip invalid files
+    }
+  }
+
+  return null;
+}
+
+/**
+ * Get first valid access token for a provider
+ */
+export function getFirstAccessTokenForProvider(provider: CLIProxyProvider): { token: string; email: string } | null {
+  const authDir = getAuthDir();
+
+  if (!fs.existsSync(authDir)) {
+    return null;
+  }
+
+  const prefix = PROVIDER_PREFIXES[provider];
+  const files = fs.readdirSync(authDir).filter((f) => f.startsWith(prefix) && f.endsWith('.json'));
+
+  for (const filename of files) {
+    try {
+      const filepath = path.join(authDir, filename);
+      const content = JSON.parse(fs.readFileSync(filepath, 'utf-8')) as AuthFile;
+
+      if (content.access_token) {
+        // Check if not expired
+        const isExpired = content.expired ? new Date(content.expired).getTime() < Date.now() : false;
+        if (!isExpired) {
+          return { token: content.access_token, email: content.email || 'unknown' };
+        }
+      }
+    } catch {
+      // Skip
+    }
+  }
+
+  return null;
+}
+
+/**
  * Count total auth files
  */
 export function countAuthFiles(): number {

@@ -7,15 +7,18 @@ Remote proxy server for CCS (Claude Code Switch). Deploy CLIProxy on a VPS and a
 - **Remote CLIProxy**: Run CLIProxy on a VPS, connect from any machine
 - **Multi-Account Support**: Multiple OAuth accounts per provider with auto-switching
 - **Auto Account Switching**: Automatically switch accounts on 429 (quota exceeded) errors
+- **OAuth Token Injection**: Automatically injects OAuth tokens from auth files
 - **Token Refresh**: Automatic OAuth token refresh before expiry
 - **Dashboard UI**: Web-based monitoring dashboard
 - **Docker Ready**: Easy deployment with Docker and docker-compose
+- **Startup Validation**: Helpful warnings if configuration is incomplete
 
 ## Quick Start
 
 ### Prerequisites
 
 - Node.js 18+ or Docker
+- CLIProxy binary (cli-proxy-api-plus)
 - Auth files from your Windows `.ccs/cliproxy/auth/` folder
 
 ### Local Development
@@ -30,10 +33,23 @@ npm start
 
 ```bash
 docker build -t ccs-remote .
-docker run -d -p 8318:8318 -v ./data:/app/data ccs-remote
+docker run -d -p 8318:8318 -v ./data:/app/data -v ./bin:/app/bin ccs-remote
 ```
 
-## Copying Auth Files from Windows
+## Setup Steps
+
+### Step 1: Download CLIProxy Binary
+
+Download the CLIProxy binary for your platform:
+
+1. Go to: https://github.com/router-for-me/CLIProxyAPIPlus/releases
+2. Download the appropriate version for your server (e.g., `CLIProxyAPIPlus_x.x.x_linux_amd64.tar.gz`)
+3. Extract and place in `./bin/cli-proxy-api-plus`
+4. Make executable: `chmod +x ./bin/cli-proxy-api-plus`
+
+Alternatively, set `CLIPROXY_BIN_PATH` environment variable to the binary location.
+
+### Step 2: Copy Auth Files from Windows
 
 1. On your Windows machine, locate the CCS auth folder:
    ```
@@ -49,6 +65,29 @@ docker run -d -p 8318:8318 -v ./data:/app/data ccs-remote
    - Source: `%USERPROFILE%\.ccs\cliproxy\auth\`
    - Destination: `/opt/ccs-remote/data/cliproxy/auth/`
 
+### Step 3: Configure Environment
+
+Create `.env` file:
+```bash
+cp .env.example .env
+nano .env
+```
+
+Edit values (IMPORTANT - change default keys!):
+```env
+CCS_API_KEY=your-secure-api-key-here
+CCS_MANAGEMENT_KEY=your-management-key-here
+CCS_DATA_DIR=/app/data
+```
+
+### Step 4: Start Server
+
+```bash
+npm start
+# Or with Docker:
+docker-compose up -d
+```
+
 ## aaPanel Deployment Guide
 
 ### Step 1: Install Docker on aaPanel
@@ -61,27 +100,25 @@ docker run -d -p 8318:8318 -v ./data:/app/data ccs-remote
 ```bash
 cd /opt
 git clone https://github.com/duogxaolin/ccs.git ccs-remote
-cd ccs-remote
+cd ccs-remote/ccs-remote
 ```
 
-### Step 3: Configure Environment
+### Step 3: Download CLIProxy Binary
 
-Create `.env` file:
+```bash
+mkdir -p bin
+cd bin
+wget https://github.com/router-for-me/CLIProxyAPIPlus/releases/download/v1.0.0/CLIProxyAPIPlus_1.0.0_linux_amd64.tar.gz
+tar -xzf CLIProxyAPIPlus_*.tar.gz
+chmod +x cli-proxy-api-plus
+cd ..
+```
+
+### Step 4: Configure and Deploy
+
 ```bash
 cp .env.example .env
-nano .env
-```
-
-Edit values:
-```env
-CCS_API_KEY=your-secure-api-key-here
-CCS_MANAGEMENT_KEY=your-management-key-here
-CCS_DATA_DIR=/app/data
-```
-
-### Step 4: Deploy with Docker Compose
-
-```bash
+nano .env  # Edit your settings
 docker-compose up -d
 ```
 
@@ -113,6 +150,10 @@ In aaPanel:
 | `CCS_MANAGEMENT_KEY` | `ccs-remote-mgmt` | Key for management endpoints |
 | `CCS_CLIPROXY_PORT` | `8317` | CLIProxy internal port |
 | `CCS_CORS_ORIGINS` | `*` | Allowed CORS origins |
+| `CLIPROXY_BIN_PATH` | (auto-detect) | Custom path to CLIProxy binary |
+| `BIND_HOST` | `0.0.0.0` | CLIProxy bind address |
+| `API_KEY_REQUIRED` | `true` | Require API key for all requests |
+| `API_KEYS` | (empty) | Additional comma-separated API keys |
 
 ## Claude Code Configuration
 
@@ -122,6 +163,8 @@ Set these environment variables in your Claude Code client:
 export ANTHROPIC_BASE_URL=https://ccs.yourdomain.com/proxy/api/provider/agy
 export ANTHROPIC_AUTH_TOKEN=your-api-key-here
 ```
+
+For other providers, change `agy` to: `gemini`, `codex`, `qwen`, `iflow`, `kiro`, `ghcp`
 
 ## API Endpoints
 

@@ -13,15 +13,71 @@
 
 import express from 'express';
 import cors from 'cors';
-import { loadConfig, ensureDataDirs } from './config';
+import * as fs from 'fs';
+import { loadConfig, ensureDataDirs, getAuthDir } from './config';
 import apiRoutes from './routes';
 import proxyHandler from './proxy-handler';
 import dashboardRouter from './dashboard';
-import { startProxy } from './cliproxy-manager';
+import { startProxy, isBinaryInstalled } from './cliproxy-manager';
 import { startTokenRefreshService } from './token-refresh';
+import { countAuthFiles, getAllAuthStatus } from './auth-manager';
+
+/**
+ * Validate startup configuration and show warnings
+ */
+function validateStartup(): { warnings: string[]; errors: string[] } {
+  const warnings: string[] = [];
+  const errors: string[] = [];
+  const config = loadConfig();
+  const authDir = getAuthDir();
+
+  // Check auth directory
+  if (!fs.existsSync(authDir)) {
+    warnings.push(`Auth directory does not exist: ${authDir}`);
+    warnings.push('  Create it and copy your auth files from Windows .ccs/cliproxy/auth/');
+  }
+
+  // Check for auth files
+  const authCount = countAuthFiles();
+  if (authCount === 0) {
+    warnings.push('No auth files found!');
+    warnings.push('  Copy .json files from Windows C:\\Users\\<user>\\.ccs\\cliproxy\\auth\\');
+    warnings.push(`  to ${authDir}`);
+  } else {
+    console.log(`[startup] Found ${authCount} auth file(s)`);
+
+    // Show auth status per provider
+    const authStatus = getAllAuthStatus();
+    for (const status of authStatus) {
+      if (status.accounts.length > 0) {
+        const expired = status.accounts.filter(a => a.isExpired).length;
+        const valid = status.accounts.length - expired;
+        console.log(`  - ${status.provider}: ${valid} valid, ${expired} expired`);
+      }
+    }
+  }
+
+  // Check CLIProxy binary
+  if (!isBinaryInstalled()) {
+    warnings.push('CLIProxy binary not found!');
+    warnings.push('  Download from: https://github.com/router-for-me/CLIProxyAPIPlus/releases');
+    warnings.push('  Place in ./bin/ or set CLIPROXY_BIN_PATH environment variable');
+  }
+
+  // Check security settings
+  if (config.apiKey === 'ccs-remote-key') {
+    warnings.push('Using default API key! Set CCS_API_KEY environment variable for production.');
+  }
+  if (config.managementKey === 'ccs-remote-mgmt') {
+    warnings.push('Using default management key! Set CCS_MANAGEMENT_KEY for production.');
+  }
+
+  return { warnings, errors };
+}
 
 async function main(): Promise<void> {
   console.log('[ccs-remote] Starting CCS Remote Proxy Server...');
+  console.log('');
 
   // Ensure data directories exist
   ensureDataDirs();
@@ -32,6 +88,26 @@ async function main(): Promise<void> {
   console.log(`  - Server: ${config.host}:${config.port}`);
   console.log(`  - Data dir: ${config.dataDir}`);
   console.log(`  - CLIProxy port: ${config.cliproxyPort}`);
+  console.log('');
+
+  // Validate startup
+  const { warnings, errors } = validateStartup();
+
+  if (errors.length > 0) {
+    console.error('[ccs-remote] ERRORS:');
+    for (const error of errors) {
+      console.error(`  ❌ ${error}`);
+    }
+    process.exit(1);
+  }
+
+  if (warnings.length > 0) {
+    console.warn('[ccs-remote] WARNINGS:');
+    for (const warning of warnings) {
+      console.warn(`  ⚠️  ${warning}`);
+    }
+    console.log('');
+  }
 
   // Start CLIProxy binary
   console.log('[ccs-remote] Starting CLIProxy...');
