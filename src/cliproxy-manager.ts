@@ -1,52 +1,21 @@
 /**
  * CCS Remote - CLIProxy binary management
  *
- * Downloads, installs, and manages the CLIProxyAPIPlus binary
+ * Manages the CLIProxyAPI binary for remote deployment.
+ *
+ * Binary lookup order:
+ * 1. CLIPROXY_BIN_PATH environment variable
+ * 2. ./bin/cli-proxy-api-plus (local bin directory)
+ * 3. /app/bin/cli-proxy-api-plus (Docker default)
+ * 4. System PATH (cli-proxy-api-plus)
  */
 
 import * as fs from 'fs';
 import * as path from 'path';
-import * as https from 'https';
-import * as http from 'http';
-import { spawn, ChildProcess } from 'child_process';
+import { spawn, ChildProcess, execSync } from 'child_process';
 import { getBinDir, getCliproxyDir, loadConfig, generateCliproxyConfig } from './config';
 
-const CLIPROXY_VERSION = '6.6.40-0';
-const GITHUB_RELEASES_BASE = 'https://github.com/router-for-me/CLIProxyAPIPlus/releases/download';
-
 let proxyProcess: ChildProcess | null = null;
-
-/**
- * Detect platform for binary download
- */
-function detectPlatform(): { os: string; arch: string; ext: string } {
-  const platform = process.platform;
-  const arch = process.arch;
-
-  const osMap: Record<string, string> = {
-    darwin: 'darwin',
-    linux: 'linux',
-    win32: 'windows',
-  };
-
-  const archMap: Record<string, string> = {
-    x64: 'amd64',
-    arm64: 'arm64',
-  };
-
-  const os = osMap[platform];
-  const cpuArch = archMap[arch];
-
-  if (!os || !cpuArch) {
-    throw new Error(`Unsupported platform: ${platform} ${arch}`);
-  }
-
-  return {
-    os,
-    arch: cpuArch,
-    ext: os === 'windows' ? 'zip' : 'tar.gz',
-  };
-}
 
 /**
  * Get executable name for current platform
@@ -56,129 +25,134 @@ function getExecutableName(): string {
 }
 
 /**
- * Get full path to binary
+ * Search paths for CLIProxy binary
  */
-export function getBinaryPath(): string {
-  return path.join(getBinDir(), getExecutableName());
+function getBinarySearchPaths(): string[] {
+  const execName = getExecutableName();
+  const paths: string[] = [];
+
+  // 1. Environment variable (highest priority)
+  if (process.env.CLIPROXY_BIN_PATH) {
+    paths.push(process.env.CLIPROXY_BIN_PATH);
+  }
+
+  // 2. Local ./bin directory
+  paths.push(path.join(process.cwd(), 'bin', execName));
+
+  // 3. Data directory bin
+  paths.push(path.join(getBinDir(), execName));
+
+  // 4. Docker default location
+  paths.push(path.join('/app', 'bin', execName));
+
+  // 5. Alternative names
+  paths.push(path.join(process.cwd(), 'bin', 'CLIProxyAPI'));
+  paths.push(path.join(getBinDir(), 'CLIProxyAPI'));
+  paths.push('/app/bin/CLIProxyAPI');
+
+  return paths;
 }
 
 /**
- * Check if binary is installed
+ * Find CLIProxy binary in search paths
+ */
+function findBinary(): string | null {
+  for (const binPath of getBinarySearchPaths()) {
+    if (fs.existsSync(binPath)) {
+      console.log(`[cliproxy] Found binary at: ${binPath}`);
+      return binPath;
+    }
+  }
+  return null;
+}
+
+/**
+ * Check if binary exists in system PATH
+ */
+function findBinaryInPath(): string | null {
+  const execName = getExecutableName();
+  try {
+    const cmd = process.platform === 'win32' ? 'where' : 'which';
+    const result = execSync(`${cmd} ${execName}`, { encoding: 'utf-8' }).trim();
+    if (result) {
+      console.log(`[cliproxy] Found binary in PATH: ${result}`);
+      return result.split('\n')[0]; // Take first result
+    }
+  } catch {
+    // Not found in PATH
+  }
+  return null;
+}
+
+/**
+ * Get full path to binary (checking all locations)
+ */
+export function getBinaryPath(): string | null {
+  // Check file system first
+  const localBinary = findBinary();
+  if (localBinary) return localBinary;
+
+  // Check system PATH
+  const pathBinary = findBinaryInPath();
+  if (pathBinary) return pathBinary;
+
+  return null;
+}
+
+/**
+ * Check if binary is installed/available
  */
 export function isBinaryInstalled(): boolean {
-  return fs.existsSync(getBinaryPath());
+  return getBinaryPath() !== null;
 }
 
 /**
- * Download file with redirect following
+ * Get detailed error message for missing binary
  */
-function downloadFile(url: string, dest: string): Promise<void> {
-  return new Promise((resolve, reject) => {
-    const file = fs.createWriteStream(dest);
-    const protocol = url.startsWith('https') ? https : http;
+function getMissingBinaryError(): string {
+  const searchPaths = getBinarySearchPaths();
+  return `
+CLIProxy binary not found!
 
-    const request = protocol.get(url, (response) => {
-      // Follow redirects
-      if (response.statusCode === 301 || response.statusCode === 302) {
-        const redirectUrl = response.headers.location;
-        if (redirectUrl) {
-          file.close();
-          fs.unlinkSync(dest);
-          downloadFile(redirectUrl, dest).then(resolve).catch(reject);
-          return;
-        }
-      }
+CCS Remote requires the CLIProxyAPI binary to proxy requests.
 
-      if (response.statusCode !== 200) {
-        reject(new Error(`Download failed: ${response.statusCode}`));
-        return;
-      }
+Please ensure the binary is available in one of these locations:
+${searchPaths.map(p => `  - ${p}`).join('\n')}
 
-      response.pipe(file);
-      file.on('finish', () => {
-        file.close();
-        resolve();
-      });
-    });
+Or set the CLIPROXY_BIN_PATH environment variable to the binary path.
 
-    request.on('error', (err) => {
-      fs.unlink(dest, () => {});
-      reject(err);
-    });
-  });
+To install CLIProxy:
+1. Download from: https://github.com/router-for-me/CLIProxyAPIPlus/releases
+2. Extract and place the binary in ./bin/ directory
+3. Make it executable: chmod +x ./bin/cli-proxy-api-plus
+
+For Docker deployment:
+  Copy the binary to /app/bin/cli-proxy-api-plus in your Dockerfile
+`.trim();
 }
 
 /**
- * Extract tar.gz archive
- */
-async function extractTarGz(archivePath: string, destDir: string): Promise<void> {
-  return new Promise((resolve, reject) => {
-    const tar = spawn('tar', ['-xzf', archivePath, '-C', destDir], { stdio: 'inherit' });
-    tar.on('close', (code) => {
-      if (code === 0) resolve();
-      else reject(new Error(`tar extract failed with code ${code}`));
-    });
-    tar.on('error', reject);
-  });
-}
-
-/**
- * Extract zip archive (for Windows in Docker - unlikely but handle it)
- */
-async function extractZip(archivePath: string, destDir: string): Promise<void> {
-  return new Promise((resolve, reject) => {
-    const unzip = spawn('unzip', ['-o', archivePath, '-d', destDir], { stdio: 'inherit' });
-    unzip.on('close', (code) => {
-      if (code === 0) resolve();
-      else reject(new Error(`unzip failed with code ${code}`));
-    });
-    unzip.on('error', reject);
-  });
-}
-
-/**
- * Download and install CLIProxy binary
- */
-export async function installBinary(): Promise<string> {
-  const binDir = getBinDir();
-  fs.mkdirSync(binDir, { recursive: true });
-
-  const platform = detectPlatform();
-  const binaryName = `CLIProxyAPIPlus_${CLIPROXY_VERSION}_${platform.os}_${platform.arch}.${platform.ext}`;
-  const downloadUrl = `${GITHUB_RELEASES_BASE}/v${CLIPROXY_VERSION}/${binaryName}`;
-  const archivePath = path.join(binDir, binaryName);
-
-  console.log(`[cliproxy] Downloading ${binaryName}...`);
-  await downloadFile(downloadUrl, archivePath);
-
-  console.log('[cliproxy] Extracting...');
-  if (platform.ext === 'tar.gz') {
-    await extractTarGz(archivePath, binDir);
-  } else {
-    await extractZip(archivePath, binDir);
-  }
-
-  // Cleanup archive
-  fs.unlinkSync(archivePath);
-
-  // Set executable permission
-  const binaryPath = getBinaryPath();
-  if (process.platform !== 'win32') {
-    fs.chmodSync(binaryPath, 0o755);
-  }
-
-  console.log(`[cliproxy] Installed: ${binaryPath}`);
-  return binaryPath;
-}
-
-/**
- * Ensure binary is installed
+ * Ensure binary is available (throws if not found)
  */
 export async function ensureBinary(): Promise<string> {
-  if (isBinaryInstalled()) {
-    return getBinaryPath();
+  const binaryPath = getBinaryPath();
+
+  if (!binaryPath) {
+    const errorMsg = getMissingBinaryError();
+    console.error('[cliproxy] ' + errorMsg);
+    throw new Error('CLIProxy binary not found. See logs for installation instructions.');
   }
-  return installBinary();
+
+  // Ensure executable permission on Unix
+  if (process.platform !== 'win32') {
+    try {
+      fs.chmodSync(binaryPath, 0o755);
+    } catch {
+      // Ignore permission errors (might be read-only filesystem)
+    }
+  }
+
+  return binaryPath;
 }
 
 /**

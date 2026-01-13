@@ -32,19 +32,72 @@ const router = Router();
 const startTime = Date.now();
 
 /**
+ * Get valid API keys from configuration and environment
+ */
+function getValidApiKeys(): string[] {
+  const config = loadConfig();
+  const keys: string[] = [config.apiKey, config.managementKey];
+
+  // Add keys from API_KEYS environment variable (comma-separated)
+  if (process.env.API_KEYS) {
+    const envKeys = process.env.API_KEYS.split(',')
+      .map(k => k.trim())
+      .filter(k => k.length > 0);
+    keys.push(...envKeys);
+  }
+
+  return keys;
+}
+
+/**
+ * Check if API key authentication is required
+ */
+function isApiKeyRequired(): boolean {
+  // API_KEY_REQUIRED env var - defaults to true for security
+  const envValue = process.env.API_KEY_REQUIRED?.toLowerCase();
+  if (envValue === 'false' || envValue === '0' || envValue === 'no') {
+    return false;
+  }
+  return true;
+}
+
+/**
  * Middleware to verify API key
+ * Supports:
+ *   - Authorization: Bearer <key>
+ *   - X-API-Key: <key>
  */
 function requireApiKey(req: Request, res: Response, next: () => void): void {
-  const config = loadConfig();
-  const authHeader = req.headers.authorization;
-
-  if (!authHeader) {
-    res.status(401).json({ error: 'Missing Authorization header' });
+  // Skip auth if not required
+  if (!isApiKeyRequired()) {
+    next();
     return;
   }
 
-  const token = authHeader.replace(/^Bearer\s+/i, '');
-  if (token !== config.apiKey && token !== config.managementKey) {
+  // Extract token from Authorization header or X-API-Key header
+  let token: string | undefined;
+
+  const authHeader = req.headers.authorization;
+  if (authHeader) {
+    token = authHeader.replace(/^Bearer\s+/i, '');
+  }
+
+  // Also check X-API-Key header
+  const xApiKey = req.headers['x-api-key'];
+  if (!token && xApiKey) {
+    token = Array.isArray(xApiKey) ? xApiKey[0] : xApiKey;
+  }
+
+  if (!token) {
+    res.status(401).json({
+      error: 'Missing authentication',
+      message: 'Provide API key via Authorization: Bearer <key> or X-API-Key: <key> header'
+    });
+    return;
+  }
+
+  const validKeys = getValidApiKeys();
+  if (!validKeys.includes(token)) {
     res.status(403).json({ error: 'Invalid API key' });
     return;
   }
