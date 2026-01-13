@@ -16,7 +16,9 @@ import cors from 'cors';
 import { loadConfig, ensureDataDirs } from './config';
 import apiRoutes from './routes';
 import proxyHandler from './proxy-handler';
+import dashboardRouter from './dashboard';
 import { startProxy } from './cliproxy-manager';
+import { startTokenRefreshService } from './token-refresh';
 
 async function main(): Promise<void> {
   console.log('[ccs-remote] Starting CCS Remote Proxy Server...');
@@ -40,6 +42,10 @@ async function main(): Promise<void> {
     console.warn('[ccs-remote] Warning: CLIProxy failed to start. API proxying may not work.');
   }
 
+  // Start token refresh service (refresh tokens every 15 minutes)
+  console.log('[ccs-remote] Starting token refresh service...');
+  startTokenRefreshService(15);
+
   // Create Express app
   const app = express();
 
@@ -59,22 +65,15 @@ async function main(): Promise<void> {
   // API routes
   app.use('/api', apiRoutes);
 
+  // Dashboard UI
+  app.use('/dashboard', dashboardRouter);
+
   // Proxy routes - forward to CLIProxy
   app.use('/proxy', proxyHandler);
 
-  // Root endpoint - basic info
+  // Root endpoint - redirect to dashboard
   app.get('/', (_req, res) => {
-    res.json({
-      name: 'CCS Remote Proxy Server',
-      version: '1.0.0',
-      status: 'running',
-      endpoints: {
-        health: '/api/health',
-        auth: '/api/auth/status',
-        proxy: '/proxy/api/provider/{provider}',
-        v1: '/proxy/v1/*',
-      },
-    });
+    res.redirect('/dashboard');
   });
 
   // Start server

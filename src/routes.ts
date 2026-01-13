@@ -12,7 +12,13 @@ import {
   stopProxy,
   isBinaryInstalled,
 } from './cliproxy-manager';
-import { HealthStatus } from './types';
+import {
+  refreshAllTokens,
+  getTokenExpirationStatus,
+  startTokenRefreshService,
+  stopTokenRefreshService,
+} from './token-refresh';
+import { HealthStatus, ProxyStats } from './types';
 
 const router = Router();
 const startTime = Date.now();
@@ -157,6 +163,173 @@ router.get('/paths', requireApiKey, (_req: Request, res: Response) => {
     authDir: getAuthDir(),
     cliproxyDir: getCliproxyDir(),
   });
+});
+
+// ============================================
+// Token Refresh Endpoints
+// ============================================
+
+/**
+ * GET /api/tokens/status - Get token expiration status for all accounts
+ */
+router.get('/tokens/status', requireApiKey, (_req: Request, res: Response) => {
+  try {
+    const status = getTokenExpirationStatus();
+    const expiringSoon = status.filter(t => t.expiresInMinutes !== null && t.expiresInMinutes < 60);
+    const expired = status.filter(t => t.isExpired);
+
+    res.json({
+      tokens: status,
+      summary: {
+        total: status.length,
+        expired: expired.length,
+        expiringSoon: expiringSoon.length,
+        healthy: status.length - expired.length - expiringSoon.length,
+      },
+    });
+  } catch (error) {
+    res.status(500).json({ error: (error as Error).message });
+  }
+});
+
+/**
+ * POST /api/tokens/refresh - Manually trigger token refresh
+ */
+router.post('/tokens/refresh', requireApiKey, async (_req: Request, res: Response) => {
+  try {
+    const results = await refreshAllTokens(0); // Refresh all regardless of expiry
+    const successCount = results.filter(r => r.success).length;
+    const failureCount = results.filter(r => !r.success).length;
+
+    res.json({
+      success: failureCount === 0,
+      message: `Refreshed ${successCount} tokens, ${failureCount} failed`,
+      results,
+    });
+  } catch (error) {
+    res.status(500).json({ error: (error as Error).message });
+  }
+});
+
+/**
+ * POST /api/tokens/auto-refresh/start - Start automatic token refresh service
+ */
+router.post('/tokens/auto-refresh/start', requireApiKey, (req: Request, res: Response) => {
+  try {
+    const intervalMinutes = req.body?.intervalMinutes || 15;
+    startTokenRefreshService(intervalMinutes);
+    res.json({ success: true, message: `Auto-refresh started (every ${intervalMinutes} minutes)` });
+  } catch (error) {
+    res.status(500).json({ error: (error as Error).message });
+  }
+});
+
+/**
+ * POST /api/tokens/auto-refresh/stop - Stop automatic token refresh service
+ */
+router.post('/tokens/auto-refresh/stop', requireApiKey, (_req: Request, res: Response) => {
+  try {
+    stopTokenRefreshService();
+    res.json({ success: true, message: 'Auto-refresh stopped' });
+  } catch (error) {
+    res.status(500).json({ error: (error as Error).message });
+  }
+});
+
+// ============================================
+// Quota Monitoring Endpoints
+// ============================================
+
+// In-memory stats storage (persisted via CLIProxy's own stats)
+const requestStats: ProxyStats = {
+  totalRequests: 0,
+  successCount: 0,
+  failureCount: 0,
+  tokens: { input: 0, output: 0, total: 0 },
+  requestsByProvider: {},
+  collectedAt: new Date().toISOString(),
+};
+
+/**
+ * Increment request stats (called from proxy handler)
+ */
+export function incrementRequestStats(provider: string, success: boolean, inputTokens = 0, outputTokens = 0): void {
+  requestStats.totalRequests++;
+  if (success) requestStats.successCount++;
+  else requestStats.failureCount++;
+
+  requestStats.tokens.input += inputTokens;
+  requestStats.tokens.output += outputTokens;
+  requestStats.tokens.total += inputTokens + outputTokens;
+
+  requestStats.requestsByProvider[provider] = (requestStats.requestsByProvider[provider] || 0) + 1;
+  requestStats.collectedAt = new Date().toISOString();
+}
+
+/**
+ * GET /api/stats - Get proxy usage statistics
+ */
+router.get('/stats', requireApiKey, (_req: Request, res: Response) => {
+  try {
+    res.json(requestStats);
+  } catch (error) {
+    res.status(500).json({ error: (error as Error).message });
+  }
+});
+
+/**
+ * GET /api/quota - Get quota information (attempts to fetch from CLIProxy)
+ */
+router.get('/quota', requireApiKey, async (_req: Request, res: Response) => {
+  try {
+    const config = loadConfig();
+
+    // Try to fetch quota from CLIProxy's management endpoint
+    try {
+      const response = await fetch(`http://127.0.0.1:${config.cliproxyPort}/stats`, {
+        headers: { 'X-Secret-Key': config.managementKey },
+      });
+
+      if (response.ok) {
+        const cliproxyStats = await response.json() as Record<string, unknown>;
+        res.json({
+          source: 'cliproxy',
+          ...cliproxyStats,
+          localStats: requestStats,
+        });
+        return;
+      }
+    } catch {
+      // CLIProxy stats not available
+    }
+
+    // Fallback to local stats
+    res.json({
+      source: 'local',
+      ...requestStats,
+      message: 'CLIProxy stats not available, showing local tracking only',
+    });
+  } catch (error) {
+    res.status(500).json({ error: (error as Error).message });
+  }
+});
+
+/**
+ * POST /api/stats/reset - Reset local statistics
+ */
+router.post('/stats/reset', requireApiKey, (_req: Request, res: Response) => {
+  try {
+    requestStats.totalRequests = 0;
+    requestStats.successCount = 0;
+    requestStats.failureCount = 0;
+    requestStats.tokens = { input: 0, output: 0, total: 0 };
+    requestStats.requestsByProvider = {};
+    requestStats.collectedAt = new Date().toISOString();
+
+    res.json({ success: true, message: 'Statistics reset' });
+  } catch (error) {
+    res.status(500).json({ error: (error as Error).message });
+  }
 });
 
 export default router;
