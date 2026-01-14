@@ -232,3 +232,33 @@ export function countAuthFiles(): number {
   return listAuthFiles().length;
 }
 
+/**
+ * Delete an auth file for a specific account
+ */
+export function deleteAuthFile(provider: CLIProxyProvider, email: string): boolean {
+  const authDir = getAuthDir();
+
+  if (!fs.existsSync(authDir)) {
+    return false;
+  }
+
+  const prefix = PROVIDER_PREFIXES[provider];
+  const files = fs.readdirSync(authDir).filter((f) => f.startsWith(prefix) && f.endsWith('.json'));
+
+  for (const filename of files) {
+    try {
+      const filepath = path.join(authDir, filename);
+      const content = JSON.parse(fs.readFileSync(filepath, 'utf-8')) as AuthFile;
+
+      if (content.email === email) {
+        fs.unlinkSync(filepath);
+        console.log(`[auth] Deleted auth file: ${filename}`);
+        return true;
+      }
+    } catch {
+      // Skip invalid files
+    }
+  }
+
+  return false;
+}

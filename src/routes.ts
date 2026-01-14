@@ -507,5 +507,36 @@ router.post('/accounts/clear-quota', requireApiKey, (_req: Request, res: Respons
   }
 });
 
+/**
+ * DELETE /api/accounts/:provider/:email - Delete a specific account
+ */
+router.delete('/accounts/:provider/:email', requireApiKey, (req: Request, res: Response) => {
+  try {
+    const provider = req.params.provider as CLIProxyProvider;
+    const email = decodeURIComponent(req.params.email);
+    const validProviders = ['gemini', 'codex', 'agy', 'qwen', 'iflow', 'kiro', 'ghcp'];
+
+    if (!validProviders.includes(provider)) {
+      res.status(400).json({ error: 'Invalid provider', validProviders });
+      return;
+    }
+
+    // Import deleteAccount function from auth-manager
+    const { deleteAuthFile } = require('./auth-manager');
+    const success = deleteAuthFile(provider, email);
+
+    if (success) {
+      res.json({ success: true, message: `Deleted account ${email}` });
+    } else {
+      res.status(404).json({
+        error: 'Account not found',
+        message: `No account ${email} found for provider ${provider}`,
+      });
+    }
+  } catch (error) {
+    res.status(500).json({ error: (error as Error).message });
+  }
+});
+
 export default router;
 

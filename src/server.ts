@@ -14,10 +14,12 @@
 import express from 'express';
 import cors from 'cors';
 import * as fs from 'fs';
+import * as path from 'path';
 import { loadConfig, ensureDataDirs, getAuthDir } from './config';
 import apiRoutes from './routes';
 import proxyHandler from './proxy-handler';
 import dashboardRouter from './dashboard';
+import oauthRouter from './oauth-routes';
 import { startProxy, isBinaryInstalled } from './cliproxy-manager';
 import { startTokenRefreshService } from './token-refresh';
 import { countAuthFiles, getAllAuthStatus } from './auth-manager';
@@ -150,15 +152,46 @@ async function main(): Promise<void> {
   // API routes
   app.use('/api', apiRoutes);
 
-  // Dashboard UI
+  // OAuth routes
+  app.use('/oauth', oauthRouter);
+
+  // Serve static UI from dist/ui (built React app)
+  const uiDistPath = path.join(__dirname, 'ui');
+  if (fs.existsSync(uiDistPath)) {
+    console.log(`[ccs-remote] Serving UI from ${uiDistPath}`);
+    app.use(express.static(uiDistPath));
+  }
+
+  // Dashboard UI (legacy HTML dashboard as fallback)
   app.use('/dashboard', dashboardRouter);
 
   // Proxy routes - forward to CLIProxy
   app.use('/proxy', proxyHandler);
 
-  // Root endpoint - redirect to dashboard
+  // Root endpoint - serve React UI or redirect to dashboard
   app.get('/', (_req, res) => {
-    res.redirect('/dashboard');
+    const indexPath = path.join(__dirname, 'ui', 'index.html');
+    if (fs.existsSync(indexPath)) {
+      res.sendFile(indexPath);
+    } else {
+      res.redirect('/dashboard');
+    }
+  });
+
+  // SPA fallback - serve index.html for non-API routes
+  app.get('*', (req, res, next) => {
+    // Skip API and proxy routes
+    if (req.path.startsWith('/api') || req.path.startsWith('/proxy') ||
+        req.path.startsWith('/oauth') || req.path.startsWith('/dashboard') ||
+        req.path.startsWith('/health')) {
+      return next();
+    }
+    const indexPath = path.join(__dirname, 'ui', 'index.html');
+    if (fs.existsSync(indexPath)) {
+      res.sendFile(indexPath);
+    } else {
+      next();
+    }
   });
 
   // Start server

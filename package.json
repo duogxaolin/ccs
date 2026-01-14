@@ -5,9 +5,13 @@
   "main": "dist/server.js",
   "scripts": {
     "build": "tsc",
+    "build:ui": "cd ui && npm run build",
+    "build:all": "npm run build && npm run build:ui",
     "start": "node dist/server.js",
     "dev": "tsc && node dist/server.js",
-    "typecheck": "tsc --noEmit"
+    "dev:ui": "cd ui && npm run dev",
+    "typecheck": "tsc --noEmit",
+    "install:ui": "cd ui && npm install"
   },
   "keywords": [
     "ccs",
